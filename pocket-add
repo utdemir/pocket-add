@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+
+set -o nounset
+
+CONSUMER_KEY="98947-abc7c05e1d09cf18467b9564"
+
+AUTH_PORT=62626
+TOKEN_PATH="$HOME/.config/pocket-token"
+
+API_URL="https://getpocket.com/v3"
+
+# https://getpocket.com/developer/docs/authentication
+function do_login() {
+   redirect_uri="http://127.0.0.1:$AUTH_PORT"
+
+   res="$(
+     curl \
+       -X POST "$API_URL/oauth/request" \
+       -d "consumer_key=$CONSUMER_KEY" \
+       -d "redirect_uri=$redirect_uri" \
+       -H 'X-Accept: application/x-www-form-urlencoded' \
+       --fail --silent
+   )"
+   exit_code=$?
+
+   if [ "$exit_code" -ne 0 ]; then
+     echo "/oauth/request failed: $res" 1>&2
+     exit 1
+   fi
+
+   request_token="$(echo "$res" | grep -Po '(?<=code=).*$')"
+
+   echo "Authenticate via:" 1>&2
+   echo "  https://getpocket.com/auth/authorize?request_token=$request_token&redirect_uri=$redirect_uri" 1>&2
+
+   echo -e 'HTTP/1.1 200 OK\nContent-Length: 32\n\nDone, you can close this window.' | nc -l  "$AUTH_PORT" > /dev/null
+
+   res="$(
+     curl \
+       -X POST "$API_URL/oauth/authorize" \
+       -d "consumer_key=$CONSUMER_KEY" \
+       -d "code=$request_token" \
+       -H 'X-Accept: application/x-www-form-urlencoded' \
+       --fail --silent
+   )"
+   exit_code=$?
+
+   if [ "$exit_code" -ne 0 ]; then
+     echo "/oauth/authorize failed: $res" 1>&2
+     exit 1
+   fi
+
+   access_token="$(echo "$res" | grep -Po '(?<=access_token=).*$')"
+   username="$(echo "$res" | grep -Po '(?<=username=).*$')"
+
+   echo -n "$access_token" > "$TOKEN_PATH"
+   echo "Logged in: $username" 1>&2
+   echo "Token saved: $TOKEN_PATH" 1>&2
+}
+
+function do_add() {
+  if ! [[ -f "$TOKEN_PATH" ]]; then
+    echo 'Access token not found. Run:'
+    echo "  $0 login" >&2
+    exit 1
+  fi
+  access_token="$(cat $TOKEN_PATH)"
+
+  url="$1"
+
+  res="$(
+    curl \
+      -X POST "$API_URL/add" \
+      -H 'X-Accept: application/x-www-form-urlencoded' \
+      -d "access_token=$access_token" \
+      -d "consumer_key=$CONSUMER_KEY" \
+      -d "url=$url" \
+      --silent --fail
+  )"
+  exit_code=$?
+
+  if [ "$exit_code" -ne 0 ]; then
+    echo "/oauth/authorize failed: $res" 1>&2
+    exit 1
+  fi
+}
+
+case "$1" in
+  login)
+    do_login
+    ;;
+  http://* | https://*)
+    do_add "$1"
+    ;;
+  *)
+    echo 'Unknown argument.' 2>&1
+    echo 'Usage:' 2>&1
+    echo "  $0 login" 2>&1
+    echo "  $0 URL" 2>&1
+    exit 1
+esac
+
+echo "Done." 1>&2
